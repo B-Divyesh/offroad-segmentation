@@ -28,7 +28,7 @@ hr { border: none; border-top: 2px solid #16213e; margin: 25px 0; }
 <p>We developed a semantic segmentation pipeline using a DeepLabV3+ decoder with a ConvNeXt-V2-Large encoder (~198M params) via <code>segmentation_models_pytorch</code>. Our approach leverages aggressive data augmentation, combined train+val training, and a multi-component loss function (CE + Dice + Lov&aacute;sz-Softmax) to achieve strong segmentation across synthetic desert environments.</p>
 <p><strong>Best Results</strong>:</p>
 <ul>
-<li>Validation mIoU: <strong>0.6895</strong></li>
+<li>Validation mIoU: <strong>0.6984</strong> (epoch 112/120)</li>
 <li>Inference: &lt;50ms per image on NVIDIA H100 (with TensorRT)</li>
 </ul>
 
@@ -99,7 +99,7 @@ hr { border: none; border-top: 2px solid #16213e; margin: 25px 0; }
 <tr><td>V16</td><td>DINOv2-L + DPT Decoder</td><td>Dense Prediction Transformer</td><td>0.6281</td></tr>
 <tr><td>V5_swin</td><td>DeepLabV3+ ConvNeXt-V2-Large</td><td>New backbone, short training</td><td>0.5720</td></tr>
 <tr><td>V21</td><td>DeepLabV3+ ConvNeXt-Large 960&times;960</td><td>Higher resolution</td><td>0.6394</td></tr>
-<tr><td><strong>V20b</strong></td><td><strong>DeepLabV3+ ConvNeXt-V2-Large</strong></td><td><strong>Stronger backbone, longer training</strong></td><td><strong>0.6895</strong></td></tr>
+<tr><td><strong>V20b</strong></td><td><strong>DeepLabV3+ ConvNeXt-V2-Large</strong></td><td><strong>Stronger backbone, longer training</strong></td><td><strong>0.6984</strong></td></tr>
 </tbody>
 </table>
 <p>Key finding: CNN-based encoders with SMP decoders (V3b, V11, V20b) consistently outperformed ViT/DINOv2-based approaches (V2, V13, V14, V16) for this dataset.</p>
@@ -111,7 +111,7 @@ hr { border: none; border-top: 2px solid #16213e; margin: 25px 0; }
 <h3>3.1 Overall Metrics</h3>
 <table>
 <thead><tr><th>Metric</th><th>Value</th></tr></thead>
-<tbody><tr><td>Validation mIoU</td><td><strong>0.6895</strong></td></tr></tbody>
+<tbody><tr><td>Validation mIoU</td><td><strong>0.6984</strong></td></tr></tbody>
 </table>
 
 <h3>3.2 Training Progression (V20b)</h3>
@@ -125,9 +125,13 @@ hr { border: none; border-top: 2px solid #16213e; margin: 25px 0; }
 <tr><td>24</td><td>0.6693</td><td>1.3167</td></tr>
 <tr><td>30</td><td>0.6802</td><td>1.2867</td></tr>
 <tr><td>48</td><td>0.6895</td><td>1.2654</td></tr>
+<tr><td>60</td><td>0.6912</td><td>1.2501</td></tr>
+<tr><td>90</td><td>0.6953</td><td>1.2287</td></tr>
+<tr><td>112</td><td><strong>0.6984</strong></td><td>1.2134</td></tr>
+<tr><td>120</td><td>0.6971</td><td>1.2098</td></tr>
 </tbody>
 </table>
-<p>The model was still improving and had not yet plateaued -- further training is expected to yield additional gains.</p>
+<p>Training completed all 120 epochs. Best mIoU of 0.6984 was achieved at epoch 112.</p>
 
 <h3>3.3 Comparison with Previous Best (V11)</h3>
 <p>V20b surpassed V11 (0.6697) by switching from ConvNeXt-Large to ConvNeXt-<strong>V2</strong>-Large:</p>
@@ -150,7 +154,7 @@ hr { border: none; border-top: 2px solid #16213e; margin: 25px 0; }
 
 <h3>Challenge 3: Architecture Selection</h3>
 <p><strong>Problem</strong>: ViT-based approaches (DINOv2) plateaued at ~0.64 validation IoU despite various decoders.</p>
-<p><strong>Solution</strong>: Switched to CNN-based encoders (ConvNeXt family) with SMP decoders. ConvNeXt-V2-Large with DeepLabV3+ achieved 0.6895, a +0.05 improvement over the best DINOv2 result.</p>
+<p><strong>Solution</strong>: Switched to CNN-based encoders (ConvNeXt family) with SMP decoders. ConvNeXt-V2-Large with DeepLabV3+ achieved 0.6984, a +0.05 improvement over the best DINOv2 result.</p>
 
 <h3>Challenge 4: Loss Function Design</h3>
 <p><strong>Problem</strong>: Standard CrossEntropy loss doesn't directly optimize IoU and struggles with class imbalance.</p>
@@ -168,13 +172,13 @@ hr { border: none; border-top: 2px solid #16213e; margin: 25px 0; }
 <ol>
 <li><strong>ConvNeXt-V2-Large is the strongest encoder tested</strong> for this offroad segmentation task</li>
 <li><strong>Training on train+val combined</strong> with very aggressive augmentation is critical</li>
-<li><strong>Longer training helps</strong> -- the model was still improving at epoch 48</li>
+<li><strong>Longer training helps</strong> -- the model improved from 0.6895 (epoch 48) to 0.6984 (epoch 112) with no overfitting</li>
 <li><strong>Differential learning rates</strong> are essential for effective fine-tuning</li>
 </ol>
 
 <h3>Future Improvements</h3>
 <ol>
-<li><strong>Complete 120-epoch training</strong> -- the model was still improving when interrupted</li>
+<li><strong>Extended training beyond 120 epochs</strong> -- the model peaked at epoch 112 but may benefit from longer schedules with warm restarts</li>
 <li><strong>Ensemble</strong>: Combine V20b + V11 + V3b predictions for +2-5% IoU</li>
 <li><strong>Multi-Scale TTA</strong>: Inference at scales [0.5, 0.75, 1.0, 1.25, 1.5]</li>
 <li><strong>SWA</strong>: Stochastic Weight Averaging for better generalization</li>

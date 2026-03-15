@@ -6,7 +6,7 @@ Semantic segmentation solution for Duality AI's Offroad Autonomy Segmentation Ch
 Uses a **DeepLabV3+** decoder with a **ConvNeXt-V2-Large** encoder (~198M params) via
 `segmentation_models_pytorch`, trained on synthetic desert terrain imagery.
 
-**Best Validation mIoU: 0.6895**
+**Best Validation mIoU: 0.6984** (epoch 112/120)
 
 ## Architecture
 
@@ -76,22 +76,22 @@ Options:
 ### Expected Output
 
 ```
-Val mIoU = 0.6895
+Val mIoU = 0.6984
 ```
 
-Per-class IoU on validation set:
+Per-class IoU on validation set (epoch 112):
 | Class | IoU |
 |-------|-----|
-| Background | 0.797 |
-| Trees | 0.811 |
-| Lush Bushes | 0.539 |
-| Dry Grass | 0.650 |
-| Dry Bushes | 0.513 |
-| Ground Clutter | 0.396 |
-| Logs | 0.396 |
-| Rocks | 0.498 |
-| Landscape | 0.862 |
-| Sky | 0.933 |
+| Background | 0.710 |
+| Trees | 0.883 |
+| Lush Bushes | 0.734 |
+| Dry Grass | 0.720 |
+| Dry Bushes | 0.531 |
+| Ground Clutter | 0.459 |
+| Logs | 0.649 |
+| Rocks | 0.585 |
+| Landscape | 0.725 |
+| Sky | 0.987 |
 
 ## Model Checkpoint
 
