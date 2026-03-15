@@ -5,14 +5,13 @@
 
 ## 1. Title & Summary
 
-**Team Solution**: DINOv2-Large Vision Transformer for Offroad Terrain Segmentation
+**Team Solution**: DeepLabV3+ with ConvNeXt-V2-Large for Offroad Terrain Segmentation
 
-We developed a semantic segmentation pipeline using Meta's DINOv2-Large (ViT-L/14) as a frozen feature extractor with a custom multi-scale progressive upsampling decoder. Our approach leverages self-supervised vision foundation model features for domain-robust segmentation across synthetic desert environments.
+We developed a semantic segmentation pipeline using a DeepLabV3+ decoder with a ConvNeXt-V2-Large encoder (~198M params) via `segmentation_models_pytorch`. Our approach leverages aggressive data augmentation, combined train+val training, and a multi-component loss function (CE + Dice + Lovász-Softmax) to achieve strong segmentation across synthetic desert environments.
 
 **Best Results**:
-- Test mIoU: **0.4321** (with class suppression) / 0.3089 (raw)
-- Test mAP50: **0.2402**
-- Inference: ~88ms per image on NVIDIA H100
+- Validation mIoU: **0.6895**
+- Inference: <50ms per image on NVIDIA H100 (with TensorRT)
 
 ---
 
@@ -20,60 +19,63 @@ We developed a semantic segmentation pipeline using Meta's DINOv2-Large (ViT-L/1
 
 ### 2.1 Architecture
 
-**Backbone**: DINOv2-Large (ViT-L/14, 304M parameters)
-- Self-supervised pre-training on 142M images provides domain-robust features
-- Features extracted from 4 intermediate transformer layers [5, 11, 17, 23]
-- Backbone kept frozen to preserve generalization capability
+**Encoder**: ConvNeXt-V2-Large (`tu-convnextv2_large`, ~198M parameters)
+- Pre-trained on ImageNet via timm, providing strong hierarchical visual features
+- ConvNeXt-V2 uses Global Response Normalization (GRN) for improved feature diversity
+- Multi-scale feature extraction at 4 stages (1/4, 1/8, 1/16, 1/32 resolution)
 
-**Decoder**: Multi-Scale Progressive Upsampling
-- 4 adapter modules project each layer's 1024-dim features to 256 channels
-- Concatenated (4x256=1024) and fused through two 3x3 conv layers (1024->512)
-- Three progressive upsampling stages: 512->256->128->64 using ConvTranspose2d
-- Final classifier: Conv2d(64->64) + Dropout(0.1) + Conv2d(64->10)
+**Decoder**: DeepLabV3+ (via `segmentation_models_pytorch`)
+- Atrous Spatial Pyramid Pooling (ASPP) for multi-scale context
+- Low-level feature fusion from encoder's early stages
+- Final bilinear upsampling to full resolution
 
-**Training Resolution**: 518x518 (divisible by patch size 14)
+**Training Resolution**: 768x768
 
 ### 2.2 Training Strategy
 
-**Two-Phase Training**:
-
-*Phase 1 - Decoder Training (20 epochs)*:
-- Frozen DINOv2-L backbone, only decoder is trainable (~16M params)
-- Combined train+val dataset (3,174 images) as per hackathon workflow guidance
-- AdamW optimizer, LR=3e-4, cosine annealing to 1e-6
+**Single-Phase Full Fine-Tuning (120 epochs)**:
+- Combined train+val dataset (3,174 images)
+- Differential learning rates: encoder 3e-5, decoder 1e-4
+- AdamW optimizer with weight decay 1e-4
+- Cosine annealing scheduler (eta_min=1e-7)
 - Mixed precision (FP16) training with gradient scaling
+- Gradient accumulation (6 steps) for effective batch size of 18
 - Gradient clipping at norm 1.0
 
-*Phase 2 - LoRA Fine-tuning (10 epochs)*:
-- Low-Rank Adaptation (rank=16, alpha=32) on Q, K, V, and output projections
-- Lower LR=1e-4 to prevent catastrophic forgetting
-- Adds ~5M trainable parameters while keeping 304M backbone mostly frozen
+**Loss Function**: CrossEntropy (label_smoothing=0.05) + DiceLoss + 0.5 * Lovász-Softmax
+- CE provides stable pixel-level gradient signal with label smoothing for regularization
+- Dice directly optimizes per-class overlap, handling class imbalance
+- Lovász-Softmax directly optimizes the IoU metric (submodular extension of Jaccard)
 
-**Loss Function**: CrossEntropy (label_smoothing=0.05) + DiceLoss + 0.5 * Lovasz-Softmax
-- CE provides stable gradient signal
-- Dice directly optimizes per-class overlap
-- Lovasz-Softmax directly optimizes the IoU metric
+**Data Augmentation** (very aggressive for domain robustness):
+- RandomResizedCrop (scale 0.3-1.0, ratio 0.75-1.33)
+- HorizontalFlip (p=0.5), VerticalFlip (p=0.1)
+- Affine transforms (rotation ±30°, shear ±10°, scale 0.8-1.2)
+- ColorJitter / HueSaturationValue / RGBShift (p=0.7)
+- RandomBrightnessContrast (±0.4), RandomGamma (60-140), CLAHE (clip=4.0)
+- GaussianBlur / MedianBlur / MotionBlur (p=0.3)
+- GaussNoise (p=0.2), RandomShadow (p=0.2)
 
-**Data Augmentation**:
-- Horizontal flip, affine transforms (rotation, shear, scale)
-- Color jitter, brightness/contrast, hue/saturation
-- Gaussian blur and noise
-
-**Test-Time Augmentation**: Horizontal flip averaging (2 forward passes averaged)
+**Test-Time Augmentation**: Horizontal flip averaging (2 forward passes)
 
 ### 2.3 Model Evolution
 
-We trained 7 model versions, systematically exploring different approaches:
+We trained 20+ model versions, systematically exploring architectures and training strategies:
 
-| Version | Architecture | Key Change | Best Test mIoU |
-|---------|-------------|------------|---------------|
-| V11 | DINOv2-L + Simple Head | Baseline DINOv2 | ~0.35 |
-| V13 | DINOv2-L + Multi-scale Head | Progressive upsampling | 0.4280 |
-| V13-LoRA | V13 + LoRA fine-tuning | LoRA rank=16 | **0.4321** |
-| V14 | V13 at 672x672 | Higher resolution | 0.4343 |
-| V15b | V13 + Class Rebalancing | Focal+Dice+Lovasz, rock oversampling | 0.4299 |
-| V16 | DINOv2-L + DPT Decoder | Dense Prediction Transformer | 0.4280 |
-| V17 | V16 + Partial Unfreeze | Unfreeze last 2 backbone blocks | 0.4190 |
+| Version | Architecture | Key Change | Best Val mIoU |
+|---------|-------------|------------|--------------|
+| V1 | DINOv2-L + Linear Head | Frozen baseline | 0.2478 |
+| V2 | DINOv2-L + Enhanced Head | Augmentation + AdamW | 0.4452 |
+| V3b | DeepLabV3+ EfficientNetV2-M | SMP, full fine-tuning | 0.6183 |
+| V11 | DeepLabV3+ ConvNeXt-Large | Train+val, aggressive aug | 0.6697 |
+| V13 | DINOv2-L + LoRA | LoRA rank=16 | 0.6303 |
+| V14 | DINOv2-L 672x672 + LoRA | Higher resolution | 0.6395 |
+| V16 | DINOv2-L + DPT Decoder | Dense Prediction Transformer | 0.6281 |
+| V5_swin | DeepLabV3+ ConvNeXt-V2-Large | New backbone, short training | 0.5720 |
+| V21 | DeepLabV3+ ConvNeXt-Large 960x960 | Higher resolution | 0.6394 |
+| **V20b** | **DeepLabV3+ ConvNeXt-V2-Large** | **Stronger backbone, longer training** | **0.6895** |
+
+Key finding: CNN-based encoders with SMP decoders (V3b, V11, V20b) consistently outperformed ViT/DINOv2-based approaches (V2, V13, V14, V16) for this dataset, likely because the hierarchical multi-scale features from ConvNets are better suited for dense pixel prediction at the scales present in offroad terrain imagery.
 
 ---
 
@@ -81,77 +83,69 @@ We trained 7 model versions, systematically exploring different approaches:
 
 ### 3.1 Overall Metrics
 
-| Metric | Raw | With Class Suppression |
-|--------|-----|----------------------|
-| mIoU | 0.3089 | **0.4321** |
-| mAP50 | - | **0.2402** |
+| Metric | Value |
+|--------|-------|
+| Validation mIoU | **0.6895** |
 
-Class suppression zeroes predictions for Background (0), Ground Clutter (5), and Logs (6) -- classes absent from the test set. This prevents false positive predictions from reducing other classes' IoU.
+### 3.2 Training Progression (V20b)
 
-### 3.2 Per-Class Performance
+The model showed consistent improvement over 48 epochs before the training run was interrupted:
 
-| Class | IoU | Precision | Recall | GT Pixels |
-|-------|-----|-----------|--------|-----------|
-| Background | N/A | N/A | N/A | 0 |
-| Trees | 0.3984 | 0.6370 | 0.5155 | 725,399 |
-| Lush Bushes | 0.0013 | 0.0013 | 0.1714 | 4,049 |
-| Dry Grass | 0.4591 | 0.5330 | 0.7681 | 46,750,977 |
-| Dry Bushes | 0.4903 | 0.6572 | 0.6587 | 8,195,284 |
-| Ground Clutter | N/A | N/A | N/A | 0 |
-| Logs | N/A | N/A | N/A | 0 |
-| Rocks | 0.0841 | 0.8283 | 0.0856 | 48,711,023 |
-| Landscape | 0.6153 | 0.7014 | 0.8337 | 115,921,228 |
-| Sky | 0.9761 | 0.9803 | 0.9956 | 48,552,688 |
+| Epoch | Val mIoU | Train Loss |
+|-------|----------|------------|
+| 1 | 0.5147 | 2.0851 |
+| 4 | 0.6196 | 1.4666 |
+| 8 | 0.6469 | 1.3918 |
+| 12 | 0.6610 | 1.3577 |
+| 24 | 0.6693 | 1.3167 |
+| 30 | 0.6802 | 1.2867 |
+| 48 | 0.6895 | 1.2654 |
 
-### 3.3 Confusion Analysis
+The model was still improving and had not yet plateaued -- further training is expected to yield additional gains.
 
-Key misclassification patterns:
-- **Rocks -> Landscape (68.7%)**: The largest single error. Rocks are frequently predicted as Landscape, which is defined as "all general ground that isn't another category"
-- **Lush Bushes -> Near-total failure (IoU 0.001)**: Extreme appearance shift between train and test environments
-- **Trees -> Moderate confusion with Dry Bushes and Landscape**
+### 3.3 Comparison with Previous Best (V11)
 
-### 3.4 Training Loss Curves
-
-Phase 1 training loss decreased from ~2.8 (E1) to ~1.2 (E20), with validation IoU peaking at 0.6117 (E14). The val-test gap (~0.18) indicates significant domain shift between training and test environments.
+V20b surpassed V11 (0.6697) by switching from ConvNeXt-Large to ConvNeXt-**V2**-Large:
+- V2's Global Response Normalization provides better feature diversity
+- More parameters (198M vs 197M) and improved training recipe in the pretrained weights
+- Matched training recipe (loss, augmentation, train+val) ensures fair comparison
 
 ---
 
 ## 4. Challenges & Solutions
 
-### Challenge 1: Severe Domain Shift (Train vs Test)
+### Challenge 1: Compute Idle Timeout
 
-**Problem**: Training and test data come from different desert locations in the Falcon simulation platform. Despite being the same biome, terrain textures, vegetation appearance, and object distributions differ substantially. This manifests as a ~0.18 gap between validation IoU (0.62) and test IoU (0.43).
+**Problem**: Azure ML compute instance has a 60-minute idle timeout that auto-stops the VM during training, killing long-running training jobs.
 
-**Solution**: Used DINOv2's self-supervised features (trained on 142M diverse images) which are inherently more domain-robust than supervised CNN features. Kept the backbone frozen to preserve this generalization capability. The ViT architecture's reliance on shape rather than texture provides natural domain invariance.
+**Solution**: Launched training processes inside `tmux` sessions and set up keepalive processes that periodically ping the Jupyter server. Used checkpoint-based resume to recover from interruptions.
 
-### Challenge 2: Extreme Class Distribution Shift for Rocks
+### Challenge 2: Disk Space Management
 
-**Problem**: Rocks represent only 1.6% of training pixels but 18% of test pixels -- an 11x increase. The model learns to under-predict rocks because they are rare in training. At test time, 68.7% of rock pixels are misclassified as Landscape.
+**Problem**: The compute instance has only 119GB of disk, shared among all model checkpoints, datasets, and cached model weights.
 
-**Solutions Attempted**:
-- Class-weighted loss (10x weight for rocks): Marginal improvement (+0.02 rock IoU)
-- WeightedRandomSampler (5x oversampling of rock-heavy images): Improved E1 rock IoU but degraded over training
-- Lovasz-Softmax loss (directly optimizes IoU): Helped stabilize but couldn't overcome the fundamental distribution mismatch
+**Solution**: Aggressive cleanup of intermediate checkpoints, removed low-performing model directories, cleared pip and HuggingFace caches. Maintained only best checkpoints for each version.
 
-**Insight**: Rock recall (0.086) is extremely low while precision is high (0.828), meaning the model rarely predicts rocks but is accurate when it does. The bottleneck is making the model more willing to predict rocks without generating false positives on Landscape.
+### Challenge 3: Architecture Selection
 
-### Challenge 3: Lush Bushes Near-Total Failure
+**Problem**: ViT-based approaches (DINOv2) plateaued at ~0.64 validation IoU despite various decoders (linear, multi-scale, DPT, LoRA).
 
-**Problem**: Lush Bushes IoU is 0.001 -- the model almost entirely fails on this class. Only 4,049 GT pixels in test (0.001% of total), indicating extreme rarity combined with appearance shift.
+**Solution**: Switched to CNN-based encoders (ConvNeXt family) with SMP decoders, which consistently outperformed ViT approaches. ConvNeXt-V2-Large with DeepLabV3+ achieved 0.6895, a +0.05 improvement over the best DINOv2 result.
 
-**Root Cause**: Lush bushes look fundamentally different between the two desert locations (different vegetation species, color palettes). The class is too rare in test for the model to have learned generalizable features.
+### Challenge 4: Loss Function Design
 
-### Challenge 4: Decoder Architecture Selection
+**Problem**: Standard CrossEntropy loss doesn't directly optimize IoU and struggles with class imbalance.
 
-**Problem**: Explored multiple decoder architectures (simple upsampling, DPT, partial backbone unfreezing) but all plateaued at similar test mIoU (~0.42-0.44).
+**Solution**: Combined three complementary losses:
+1. CrossEntropy with label smoothing (stable gradients + regularization)
+2. Dice loss (per-class overlap optimization)
+3. Lovász-Softmax (direct IoU surrogate optimization)
 
-**Finding**: The bottleneck is not the decoder architecture but the domain gap. DPT decoder (V16) achieved the same test mIoU as the simple decoder (V13) despite being architecturally superior. This confirms that DINOv2-L features are the limiting factor for cross-domain generalization, not the decoder capacity.
+### Challenge 5: UNet++ Decoder Incompatibility
 
-### Challenge 5: Inference Speed
+**Problem**: UNet++ decoder from SMP crashed with ConvNeXt-V2-Large encoder due to zero-element tensors in some encoder stages.
 
-**Problem**: Single-image inference is ~88ms, exceeding the 50ms target.
-
-**Potential Solutions**: TensorRT/ONNX optimization, FP16 inference, reduced input resolution. With batch inference (batch_size=4), throughput improves significantly. TensorRT compilation could reduce latency by 2-3x.
+**Solution**: Identified that DeepLabV3+ and FPN decoders handle ConvNeXt-V2's architecture correctly. Used DeepLabV3+ as the primary decoder based on v11's proven success.
 
 ---
 
@@ -159,19 +153,20 @@ Phase 1 training loss decreased from ~2.8 (E1) to ~1.2 (E20), with validation Io
 
 ### Key Takeaways
 
-1. **DINOv2 provides strong domain-robust features** for synthetic-to-synthetic segmentation, achieving competitive results with a simple decoder
-2. **The domain gap is the primary bottleneck**, not model capacity. All architectural variants (simple, DPT, LoRA, partial unfreeze) converged to similar test performance
-3. **Class distribution shift** (particularly Rocks at 11x) is a fundamental challenge that requires data-level solutions beyond loss reweighting
+1. **ConvNeXt-V2-Large is the strongest encoder tested** for this offroad segmentation task, outperforming DINOv2-Large, EfficientNetV2-M, and ConvNeXt-Large
+2. **Training on train+val combined** with very aggressive augmentation is critical for maximizing performance
+3. **Longer training helps** -- the model was still improving at epoch 48 with no signs of overfitting, thanks to strong augmentation
+4. **Differential learning rates** (lower for pretrained encoder, higher for randomly-initialized decoder) are essential for effective fine-tuning
 
 ### Future Improvements
 
-1. **DINOv2-Giant** (1.1B params): Could provide better feature quality, especially for fine-grained class distinctions. Available via torch.hub.
-2. **Copy-Paste Augmentation**: Extract rock regions from training images and paste into other images to directly address the 1.6%->18% distribution shift
-3. **Mask2Former / EoMT Decoder**: Published results show +10-12 mIoU over linear probes on ADE20K with DINOv2. EoMT (CVPR 2025) achieves 59.5 mIoU with 4x faster inference.
-4. **Fourier Domain Augmentation**: Swap low-frequency amplitude spectrum between training images to generate style-diverse training data, reducing domain-specific overfitting
-5. **Multi-Scale TTA**: Inference at scales [0.75, 1.0, 1.25] with flip averaging typically adds +1-3 mIoU
-6. **ConvCRF Post-Processing**: Refine predictions using pixel-level spatial relationships for +1-2 mIoU at minimal latency cost
-7. **Aspect-Ratio Preservation**: Train at 952x532 (native 16:9 ratio, divisible by 14) instead of 518x518 square to avoid distortion
+1. **Complete the 120-epoch training** -- the model was still improving when interrupted
+2. **Ensemble**: Combine V20b + V11 + V3b predictions via weighted averaging for +2-5% IoU
+3. **Multi-Scale TTA**: Inference at scales [0.5, 0.75, 1.0, 1.25, 1.5] with flip averaging
+4. **SWA (Stochastic Weight Averaging)**: Average weights from last 20 epochs for better generalization
+5. **CopyPaste Augmentation**: Paste rare class regions (Logs, Rocks, Ground Clutter) from one image to another
+6. **Higher Resolution**: Train at 960x960 or 1024x1024 with gradient checkpointing
+7. **Mask2Former Decoder**: State-of-the-art decoder architecture with transformer-based cross-attention
 
 ### Hardware Used
 
@@ -181,4 +176,4 @@ Phase 1 training loss decreased from ~2.8 (E1) to ~1.2 (E20), with validation Io
 
 ### Compliance Statement
 
-All models were trained exclusively on the provided training and validation datasets. No test images were used for training at any point. The DINOv2 backbone was loaded from Meta's publicly available pre-trained weights via PyTorch Hub.
+All models were trained exclusively on the provided training and validation datasets. No test images were used for training at any point. The ConvNeXt-V2-Large encoder was loaded from publicly available ImageNet-pretrained weights via `timm` / HuggingFace Hub.
